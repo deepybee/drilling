@@ -4,11 +4,30 @@ from elasticsearch import Elasticsearch
 from ssl import create_default_context
 import re
 import json
+import boto3
+
+s3 = boto3.resource('s3')
+
+target_bucket = s3.Bucket(name='deepybee-shell-test')
+
+tops_data_pattern = re.compile('tops\.\d_\w{1,}_\d{3}(|\w+)_\w{3}_\d+')
+tops_data_files = []
+
+for object in target_bucket.objects.all():
+    if re.search(tops_data_pattern, str(object)):
+        tops_data_files.append(object.key)
+
+print(tops_data_files)
+
+file = tops_data_files[0]
+
+s3.Object(target_bucket.name, file).download_file(f'/tmp/tops_processing')
+
 
 context = create_default_context(cafile="/path/to/ca.crt")
 es = Elasticsearch("https://localhost:9200", ssl_context=context, http_auth=('elastic', 'Pa55w0rd'))
 
-log = open('topsdata.log', 'r')
+log = open('/tmp/tops_processing', 'r')
 
 source_input = log.read().replace('C-', '')
 
@@ -98,6 +117,7 @@ for field in values:
     values[index] = values[index].strip()
     index += 1
 
+upper_dictionary = {}
 upper_dictionary = dict(zip(column_names, values))
 
 lower_headers = ['marker_top-md', 'marker_base-md', 'marker_name_sand-zone_name', 'mrk_cd', 'marker_comments', 'dip_ang', 'dip_azm', 'observed_net_gas', 'observed_net_oil', 'observed_net_sand', 'por_percent', 'sw_percent', 'perm_mdarc',
@@ -114,8 +134,8 @@ lower_values = list(split_lower(lower, 45))
 docs_list = []
 
 for split in lower_values:
+    lower_dictionary = {}
     lower_dictionary = dict(zip(lower_headers, split))
-    print(lower_dictionary)
     dict_for_frame = {**upper_dictionary, **lower_dictionary}
     docs_list.append(dict_for_frame)
 
