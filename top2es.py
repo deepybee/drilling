@@ -11,14 +11,16 @@ es = Elasticsearch("https://localhost:9200", ssl_context=context, http_auth=('el
 
 s3 = boto3.resource('s3')
 
-target_bucket = s3.Bucket(name='deepybee-shell-test')
+target_bucket = s3.Bucket(name='my_bucket')
 
 tops_data_pattern = re.compile('tops\.\d_\w{1,}_\d{3}(|\w+)_\w{3}_\d+')
 tops_data_files = []
 
-for object in target_bucket.objects.all():
-    if re.search(tops_data_pattern, str(object)):
-        tops_data_files.append(object.key)
+print('\nTraversing S3 bucket', str(target_bucket.name), 'for TOPS data files, please wait')
+
+for s3_object in target_bucket.objects.all():
+    if re.search(tops_data_pattern, str(s3_object)):
+        tops_data_files.append(s3_object.key)
 
 
 print('\nFound ' + str(len(tops_data_files)) + ' Wellbore data files in S3 bucket ' + str(target_bucket.name), '\n')
