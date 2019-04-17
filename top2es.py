@@ -105,21 +105,24 @@ lower_headers = ['marker_top-md', 'marker_base-md', 'marker_name_sand-zone_name'
                  'corr_factor-tvt', 'corr_factor-tst', 'hole_angl', 'hole_azmth', 'dip_interp-ang', 'dip_interp-dir', 'proj_syst', 'grid_coordinates_x', 'grid_coordinates_y', 'subdatum_z-depth', 'seismic_time', 'from_surf_east-west',
                  'from_surf_north-south', 'closure','longitude-latitude-water_depth-tvd_depth', 'data_source', 'well_data', 'comments', 'type', 'obs_num', 'size', 'comments2']
 
-def split_lower(list, index_to_split_on):
-    for field_index in range(0, len(list), index_to_split_on):
-        yield list[field_index:field_index + index_to_split_on]
+def split_lower(list_of_lower_values, index_to_split_on):
+    for field_index in range(0, len(list_of_lower_values), index_to_split_on):
+        yield list_of_lower_values[field_index:field_index + index_to_split_on]
 
 lower_values = list(split_lower(lower, 45))
 
-lower_dictionary = dict(zip(lower_headers, lower))
+docs_list = []
 
 for split in lower_values:
-    pass
+    lower_dictionary = dict(zip(lower_headers, split))
+    print(lower_dictionary)
+    dict_for_frame = {**upper_dictionary, **lower_dictionary}
+    docs_list.append(dict_for_frame)
 
-lower_dictionary = dict(zip(lower_headers, lower))
-dict_for_frame = {**upper_dictionary, **lower_dictionary}
+index = 0
 
-json = json.dumps(dict_for_frame)
+for dict in docs_list:
+    docs_list[index] = json.dumps(docs_list[index])
 
 def dict2doc(current_dict):
     body = []
@@ -129,4 +132,5 @@ def dict2doc(current_dict):
     response = es.bulk(body=body)
 
 if __name__ == "__main__":
-    dict2doc(json)
+    for doc in docs_list:
+        dict2doc(doc)

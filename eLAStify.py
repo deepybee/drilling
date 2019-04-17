@@ -41,7 +41,7 @@ las_df['operator'] = dict_from_las['well']['COMP']['value']
 def frame2doc(dataframe):
     body = []
     for row in dataframe.index:
-        body.append({'index': {'_index': 'python_las_test', '_type': '_doc'}})
+        body.append({'index': {'_index': 'las_data', '_type': '_doc'}})
         body.append(dataframe.loc[row].to_json())
 
     response = es.bulk(body=body)
