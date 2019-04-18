@@ -42,7 +42,7 @@ def parse_las_data(las_data_doc, index_name, es):
     #Iterate over every row in the data
     for _, row in las_df.iterrows():
       # Get each row as json and remove any fields with the null value in them
-      clean_row = {key:val for key, val in row.items() if val != -999.2500}
+      clean_row = {curve_data[key]['name']:val for key, val in row.items() if val != -999.2500}
       # Build up the Elasticsearch document
       all_data.append(
         {
