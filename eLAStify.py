@@ -94,6 +94,7 @@ def parse_las_data(las_data_doc):
     las_df['field_name'] = dict_from_las['well']['FLD']['value']
     las_df['country'] = dict_from_las['well']['CTRY']['value']
     las_df['operator'] = dict_from_las['well']['COMP']['value']
+    las_df['wellname'] = dict_from_las['well']['WELL']['value']
 
 
     def frame2doc(dataframe):
