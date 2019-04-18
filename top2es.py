@@ -5,13 +5,45 @@ from ssl import create_default_context
 import re
 import json
 import boto3
+import argparse
 
-context = create_default_context(cafile="/path/to/ca.crt")
-es = Elasticsearch("https://localhost:9200", ssl_context=context, http_auth=('elastic', 'Pa55w0rd'))
+parser = argparse.ArgumentParser(description='Processes Wellbore / TOPS data files and indexes them into an Elasticsearch cluster.')
+
+parser.add_argument('--es-url', metavar='elasticsearch.mydomain.com', type=str,
+                   help='the Elasticsearch cluster URL', required=True)
+parser.add_argument('--es-port', metavar= 9200, type=int, default=9200,
+                   help='the port Elasticsearch listens on')
+parser.add_argument('--index', metavar='tops_data', type=str,
+                   help='the index the documents should be written to', default='tops_data')
+parser.add_argument('--insecure', metavar=False, type=bool, default=False,
+                   help='set to True (not lowercase true) if connecting to a cluster not secured with SSL/TLS')
+parser.add_argument('--user', metavar='elastic', type=str,
+                    help='not needed if connecting to an unsecured cluster')
+parser.add_argument('--password', metavar='Pa55w0rd', type=str,
+                   help='not needed if connecting to  an unsecured cluster',)
+parser.add_argument('--ca-cert', metavar='/path/to/ca/ca.crt', type=str,
+                   help='not needed if connecting to a cluster not secured with SSL/TLS')
+parser.add_argument('--bucket', metavar='my-bucket', type=str,
+                   help='name of the S3 bucket to retrieve files from', required=True)
+
+
+args = parser.parse_args()
+
+if args.insecure:
+    full_es_url = 'http://' + args.es_url + ':' + str(args.es_port)
+    es = Elasticsearch(full_es_url)
+
+else:
+    full_es_url = 'https://' + args.es_url + ':' + str(args.es_port)
+    context = create_default_context(cafile=args.ca_cert)
+    es = Elasticsearch(full_es_url, ssl_context=context, http_auth=(args.user, args.password))
+#
+# context = create_default_context(cafile="/path/to/ca.crt")
+# es = Elasticsearch("https://localhost:9200", ssl_context=context, http_auth=('elastic', 'Pa55w0rd'))
 
 s3 = boto3.resource('s3')
 
-target_bucket = s3.Bucket(name='my_bucket')
+target_bucket = s3.Bucket(name=args.bucket)
 
 tops_data_pattern = re.compile('tops\.\d_\w{1,}_\d{3}(|\w+)_\w{3}_\d+')
 tops_data_files = []
@@ -28,6 +60,7 @@ print('\nFound ' + str(len(tops_data_files)) + ' Wellbore data files in S3 bucke
 total_docs = 0
 total_files = 0
 
+print('Parsing and indexing data into the', args.index, 'index in the Elasticsearch cluster at', full_es_url, '\n')
 
 def create_dict(key_list, value_list):
     return dict(zip(key_list, value_list))
@@ -158,7 +191,7 @@ def parse_tops_data(top_data_doc):
 
     def dict2doc(current_dict):
         body = list()
-        body.append({'index': {'_index': 'tops_data', '_type': '_doc'}})
+        body.append({'index': {'_index': args.index, '_type': '_doc'}})
         body.append(current_dict)
 
         response = es.bulk(body=body)
