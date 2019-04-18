@@ -37,9 +37,7 @@ else:
     full_es_url = 'https://' + args.es_url + ':' + str(args.es_port)
     context = create_default_context(cafile=args.ca_cert)
     es = Elasticsearch(full_es_url, ssl_context=context, http_auth=(args.user, args.password))
-#
-# context = create_default_context(cafile="/path/to/ca.crt")
-# es = Elasticsearch("https://localhost:9200", ssl_context=context, http_auth=('elastic', 'Pa55w0rd'))
+
 
 s3 = boto3.resource('s3')
 
