@@ -71,10 +71,6 @@ def parse_las_data(las_data_doc):
 
     dict_from_las = log.get_dict()
 
-
-    def parse_las_data(top_data_doc):
-        pass
-
     data = dict_from_las['data']
     las_columns = {'depth': data['dept'],
                    'caliper': data['cali'],
