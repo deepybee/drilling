@@ -3,122 +3,142 @@
 import pandas as pd
 from LAS import Converter
 from elasticsearch import Elasticsearch
+from elasticsearch import helpers
 from ssl import create_default_context
 import re
-import boto3
 import argparse
 
-parser = argparse.ArgumentParser(description='Processes LAS data files and indexes them into an Elasticsearch cluster.')
-
-parser.add_argument('--es-url', metavar='elasticsearch.mydomain.com', type=str,
-                   help='the Elasticsearch cluster URL', required=True)
-parser.add_argument('--es-port', metavar= 9200, type=int, default=9200,
-                   help='the port Elasticsearch listens on')
-parser.add_argument('--index', metavar='las_data', type=str,
-                   help='the Elasticsearch cluster URL', default='las_data')
-parser.add_argument('--insecure', metavar=False, type=bool, default=False,
-                   help='set to True (not lowercase true) if connecting to a cluster not secured with SSL/TLS')
-parser.add_argument('--user', metavar='elastic', type=str,
-                    help='not needed if connecting to an unsecured cluster')
-parser.add_argument('--password', metavar='Pa55w0rd', type=str,
-                   help='not needed if connecting to  an unsecured cluster',)
-parser.add_argument('--ca-cert', metavar='/path/to/ca/ca.crt', type=str,
-                   help='not needed if connecting to a cluster not secured with SSL/TLS')
-parser.add_argument('--bucket', metavar='my-bucket', type=str,
-                   help='name of the S3 bucket to retrieve files from', required=True)
-
-
-args = parser.parse_args()
-
-if args.insecure:
-    full_es_url = 'http://' + args.es_url + ':' + str(args.es_port)
-    es = Elasticsearch(full_es_url)
-
-else:
-    full_es_url = 'https://' + args.es_url + ':' + str(args.es_port)
-    context = create_default_context(cafile=args.ca_cert)
-    es = Elasticsearch(full_es_url, ssl_context=context, http_auth=(args.user, args.password))
-
-s3 = boto3.resource('s3')
-
-target_bucket = s3.Bucket(name=args.bucket)
-
-las_data_pattern = re.compile('\d+\.las')
-las_data_files = []
-
-print('\nTraversing S3 bucket', str(target_bucket.name), 'for LAS data files, please wait')
-
-for s3_object in target_bucket.objects.all():
-    if re.search(las_data_pattern, str(s3_object)):
-        las_data_files.append(s3_object.key)
-
-
-print('\nFound ' + str(len(las_data_files)) + ' LAS data files in S3 bucket ' + str(target_bucket.name), '\n')
-
-total_docs = 0
-total_files = 0
-this_files_docs = 0
-
-print('Parsing and indexing data into the', args.index, 'index in the Elasticsearch cluster at', full_es_url, '\n')
-
-def parse_las_data(las_data_doc):
-
+def parse_las_data(las_data_doc, index_name, es):
+    c = Converter()
+    # Download the LAS file from S3
     s3.Object(target_bucket.name, las_data_doc).download_file(f'/tmp/las_processing.las')
 
-    c = Converter()
-
+    # Read it
     log = c.set_file('/tmp/las_processing.las')
 
-    dict_from_las = log.get_dict()
+    meta_data = {}
+    curve_data = {}
+    data = {}
 
+    # Programatically get all meta data fields and store them nicely
+    for meta_key, meta_value in log.get_dict()['well'].items():
+      if meta_value is not None:
+        meta_data[meta_value['desc'].replace(' ', '_').lower()] = meta_value['value']
 
-    def parse_las_data(top_data_doc):
-        pass
+    # Programatically get all curve data and names and store them nicely
+    for curve_key, curve_value in log.get_dict()['curve'].items():
+      curve_data[curve_key] = {
+        "name": curve_value['desc'].split("  ")[1].replace(' ', '_').lower(),
+        "unit": curve_value['unit']
+      }
+      # Get the actual curve data and store it in a dict for Pandas to read
+      data[curve_key.lower()] = log.get_dict()['data'][curve_key.lower()]
 
-    data = dict_from_las['data']
-    las_columns = {'depth': data['dept'],
-                   'caliper': data['cali'],
-                   'bulk_density': data['den'],
-                   'delta_t_compressional': data['dt'],
-                   'neutron_porosity_in_limestone_units': data['neu'],
-                   'resistivity_shallow': data['resslw'],
-                   'resistivity_deep': data['res_dep_ind'],
-                   'spontaneous_potential': data['sp'],
-                   'spontaneous_potential_corrected': data['spc']
-                   }
+    # Read the curve data into pandas which automagically tidies a lot up
+    las_df = pd.DataFrame(data)
 
-    las_df = pd.DataFrame(las_columns)
-    las_df['latitude'] = dict_from_las['well']['LATI']['value']
-    las_df['longitude'] = dict_from_las['well']['LONG']['value']
-    las_df['geo_point'] = las_df['latitude'].astype(str) + "," + las_df['longitude'].astype(str)
-    las_df['field_name'] = dict_from_las['well']['FLD']['value']
-    las_df['country'] = dict_from_las['well']['CTRY']['value']
-    las_df['operator'] = dict_from_las['well']['COMP']['value']
-    las_df['wellname'] = dict_from_las['well']['WELL']['value']
+    all_data = []
 
+    #Iterate over every row in the data
+    for _, row in las_df.iterrows():
+      # Get each row as json and remove any fields with the null value in them
+      clean_row = {key:val for key, val in row.items() if val != -999.2500}
+      # Build up the Elasticsearch document
+      all_data.append(
+        {
+          "_index": index_name,
+          "_type": "_doc",
+          "_source": {
+            "data": clean_row,
+            "geo_point": {
+              "lat": meta_data['surf._latitude'],
+              "lon": meta_data['surf._longitude']
+            },
+            **meta_data
+          }
+        }
+      )
 
-    def frame2doc(dataframe):
-        global this_files_docs
-        this_files_docs = 0
-        body = []
-        for row in dataframe.index:
-            body.append({'index': {'_index': args.index, '_type': '_doc'}})
-            body.append(dataframe.loc[row].to_json())
+    # Upload the entire LAS file
+    print(f"Uploading {len(all_data)}")
+    helpers.bulk(es, all_data)
 
-            global  total_docs
-            total_docs += 1
+    print(f'Indexed {len(all_data)} records from LAS data file {str(las_data_doc)}')
 
-            this_files_docs += 1
-
-        response = es.bulk(body=body)
-
-    frame2doc(las_df)
-
-    print('Indexed', str(this_files_docs), 'documents from LAS data file', str(las_data_doc))
-
-    global total_files
-    total_files += 1
 if __name__ == "__main__":
-    for doc in las_data_files:
-        parse_las_data(doc)
-    print('\nTotal', str(total_docs), 'documents processed and indexed into Elasticsearch from', str(total_files), 'source files.')
+  parser = argparse.ArgumentParser(description='Processes LAS data files and indexes them into an Elasticsearch cluster.')
+
+  parser.add_argument('--es-url', metavar='elasticsearch.mydomain.com', type=str,
+                     help='the Elasticsearch cluster URL', required=True)
+  parser.add_argument('--es-port', metavar= 9200, type=int, default=9200,
+                     help='the port Elasticsearch listens on')
+  parser.add_argument('--index', metavar='las_data', type=str,
+                     help='the Elasticsearch cluster URL', default='las_data')
+  parser.add_argument('--insecure', metavar=False, type=bool, default=False,
+                     help='set to True (not lowercase true) if connecting to a cluster not secured with SSL/TLS')
+  parser.add_argument('--user', metavar='elastic', type=str,
+                      help='not needed if connecting to an unsecured cluster')
+  parser.add_argument('--password', metavar='Pa55w0rd', type=str,
+                     help='not needed if connecting to  an unsecured cluster',)
+  parser.add_argument('--ca-cert', metavar='/path/to/ca/ca.crt', type=str,
+                     help='not needed if connecting to a cluster not secured with SSL/TLS')
+  parser.add_argument('--bucket', metavar='my-bucket', type=str,
+                     help='name of the S3 bucket to retrieve files from', required=True)
+
+
+  args = parser.parse_args()
+
+  index_mapping = {
+    "mappings" : {
+      "_doc": {
+        "properties" : {
+          "geo_point" : {
+            "type": "geo_point"
+          }
+        }
+      }
+    }
+  }
+
+  if args.insecure:
+      full_es_url = 'http://' + args.es_url + ':' + str(args.es_port)
+      es = Elasticsearch(full_es_url)
+
+  else:
+      full_es_url = 'https://' + args.es_url + ':' + str(args.es_port)
+      es = Elasticsearch(full_es_url, http_auth=(args.user, args.password))
+
+
+  if es.indices.exists(index=args.index) is False:
+    es.indices.create(index=args.index, body=index_mapping)
+
+  s3 = boto3.resource('s3')
+
+  target_bucket = s3.Bucket(name=args.bucket)
+
+  las_data_pattern = re.compile('\d+\.las')
+  las_data_files = []
+
+  print('\nTraversing S3 bucket', str(target_bucket.name), 'for LAS data files, please wait')
+
+  for s3_object in target_bucket.objects.all():
+      if re.search(las_data_pattern, str(s3_object)):
+          las_data_files.append(s3_object.key)
+
+
+  print('\nFound ' + str(len(las_data_files)) + ' LAS data files in S3 bucket ' + str(target_bucket.name), '\n')
+
+  total_docs = 0
+  total_files = 0
+  this_files_docs = 0
+
+  print('Parsing and indexing data into the', args.index, 'index in the Elasticsearch cluster at', full_es_url, '\n')
+
+  for i, doc in enumerate(las_data_files):
+    print(f"Processing file {i + 1}/{len(las_data_files)}")
+    parse_las_data(doc, args.index, es)
+
+  print()
+  print(f'{len(las_data_files)} LAS files processed and indexed into Elasticsearch.')
+
+
