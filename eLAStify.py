@@ -7,14 +7,49 @@ from elasticsearch import helpers
 from ssl import create_default_context
 import re
 import argparse
+import boto3
+import glob
+import logging
+
+def _is_float(v):
+  try:
+    float(v)
+    return True
+  except Exception as e:
+    return False
+
+
+def get_las_from_s3(bucket):
+  s3 = boto3.resource('s3')
+
+  target_bucket = s3.Bucket(name=bucket)
+
+  las_data_pattern = re.compile('\d+\.las')
+  las_data_files = []
+
+  print('\nTraversing S3 bucket', str(target_bucket.name), 'for LAS data files, please wait')
+
+  for s3_object in target_bucket.objects.all():
+      if re.search(las_data_pattern, str(s3_object)):
+          las_data_files.append(s3_object.key)
+
+  print('\nFound ' + str(len(las_data_files)) + ' LAS data files in S3 bucket ' + str(target_bucket.name), '\n')
+  
+  return las_data_files
 
 def parse_las_data(las_data_doc, index_name, es):
     c = Converter()
     # Download the LAS file from S3
-    s3.Object(target_bucket.name, las_data_doc).download_file(f'/tmp/las_processing.las')
+    #s3.Object(target_bucket.name, las_data_doc).download_file(f'/tmp/las_processing.las')
 
-    # Read it
-    log = c.set_file('/tmp/las_processing.las')
+    # Read it. If something goes wrong, skip the file
+    log = None
+    try:
+      #log = c.set_file('/tmp/las_processing.las')
+      log = c.set_file(las_data_doc)
+    except Exception as ex:
+      logging.warn(ex)
+      return False
 
     meta_data = {}
     curve_data = {}
@@ -25,9 +60,20 @@ def parse_las_data(las_data_doc, index_name, es):
       if meta_value is not None:
         meta_data[meta_value['desc'].replace(' ', '_').lower()] = meta_value['value']
 
+    # If the expected latitude and longitude fields are not present - skip
+    if 'surf._latitude' not in meta_data or 'surf._longitude' not in meta_data:
+      logging.warn('Different latitude and longitude fields present.. skipping')  
+
+      return False
+
+    # If the latitude and longitude formats are not in the expected format - skip
+    if _is_float(meta_data['surf._latitude']) is False or _is_float(meta_data['surf._longitude']) is False:
+      logging.warn("Different latitude or longitude format. Only supporting decimal format as that is what was provided in the sample... Skipping")
+      return False
+
     # Programatically get all curve data and names and store them nicely
     for curve_key, curve_value in log.get_dict()['curve'].items():
-      curve_data[curve_key] = {
+      curve_data[curve_key.lower()] = {
         "name": curve_value['desc'].split("  ")[1].replace(' ', '_').lower(),
         "unit": curve_value['unit']
       }
@@ -35,7 +81,11 @@ def parse_las_data(las_data_doc, index_name, es):
       data[curve_key.lower()] = log.get_dict()['data'][curve_key.lower()]
 
     # Read the curve data into pandas which automagically tidies a lot up
-    las_df = pd.DataFrame(data)
+    try:
+      las_df = pd.DataFrame(data)
+    except Exception as ex:
+      logging.error(ex)
+      return False
 
     all_data = []
 
@@ -43,6 +93,7 @@ def parse_las_data(las_data_doc, index_name, es):
     for _, row in las_df.iterrows():
       # Get each row as json and remove any fields with the null value in them
       clean_row = {curve_data[key]['name']:val for key, val in row.items() if val != -999.2500}
+
       # Build up the Elasticsearch document
       all_data.append(
         {
@@ -60,12 +111,25 @@ def parse_las_data(las_data_doc, index_name, es):
       )
 
     # Upload the entire LAS file
-    print(f"Uploading {len(all_data)}")
-    helpers.bulk(es, all_data)
+    logging.info(f"Uploading {len(all_data)}")
+    helpers.bulk(es, all_data, raise_on_exception=False, raise_on_error=False)
 
-    print(f'Indexed {len(all_data)} records from LAS data file {str(las_data_doc)}')
+    logging.info(f'Indexed {len(all_data)} records from LAS data file {str(las_data_doc)}')
+    return True
 
 if __name__ == "__main__":
+  for _ in ("boto", "elasticsearch", "urllib3"):
+    logging.getLogger(_).setLevel(logging.CRITICAL)
+
+  logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)-5.5s]  %(message)s",
+    handlers=[
+        logging.FileHandler("las.log"),
+        logging.StreamHandler()
+    ])
+
+
   parser = argparse.ArgumentParser(description='Processes LAS data files and indexes them into an Elasticsearch cluster.')
 
   parser.add_argument('--es-url', metavar='elasticsearch.mydomain.com', type=str,
@@ -105,40 +169,36 @@ if __name__ == "__main__":
       es = Elasticsearch(full_es_url)
 
   else:
+      #context = create_default_context(cafile=args.ca_cert)
       full_es_url = 'https://' + args.es_url + ':' + str(args.es_port)
+      #es = Elasticsearch(full_es_url, ssl_context=context, http_auth=(args.user, args.password))
       es = Elasticsearch(full_es_url, http_auth=(args.user, args.password))
 
 
   if es.indices.exists(index=args.index) is False:
     es.indices.create(index=args.index, body=index_mapping)
 
-  s3 = boto3.resource('s3')
+  #las_data_files = get_las_from_s3(args.bucket)
+  las_data_files = list(glob.iglob("/Users/alexclose/Documents/Data/lasData/LAS_SHELL/*.las", recursive=True))
+  logging.info(f"Found {len(las_data_files)} las data files")
 
-  target_bucket = s3.Bucket(name=args.bucket)
-
-  las_data_pattern = re.compile('\d+\.las')
-  las_data_files = []
-
-  print('\nTraversing S3 bucket', str(target_bucket.name), 'for LAS data files, please wait')
-
-  for s3_object in target_bucket.objects.all():
-      if re.search(las_data_pattern, str(s3_object)):
-          las_data_files.append(s3_object.key)
-
-
-  print('\nFound ' + str(len(las_data_files)) + ' LAS data files in S3 bucket ' + str(target_bucket.name), '\n')
+  las_data_files = las_data_files
 
   total_docs = 0
   total_files = 0
   this_files_docs = 0
+  failed = 0
 
-  print('Parsing and indexing data into the', args.index, 'index in the Elasticsearch cluster at', full_es_url, '\n')
+  logging.info(f'Parsing and indexing data into the {args.index} index in the Elasticsearch cluster at {full_es_url}')
 
   for i, doc in enumerate(las_data_files):
-    print(f"Processing file {i + 1}/{len(las_data_files)}")
-    parse_las_data(doc, args.index, es)
+    logging.info(f"Processing file {i + 1}/{len(las_data_files)}")
+    result = parse_las_data(doc, args.index, es)
 
-  print()
-  print(f'{len(las_data_files)} LAS files processed and indexed into Elasticsearch.')
+    if result is False:
+      logging.info("Failed to parse file... doesn't follow the provide sample format")
+      failed = failed + 1
 
+  logging.info(f'{len(las_data_files)} LAS files processed and indexed into Elasticsearch.')
+  logging.info(f'{failed} LAS files failed when uploading as they didnt follow the sample format')
 
