@@ -18,34 +18,12 @@ def _is_float(v):
   except Exception as e:
     return False
 
-
-def get_las_from_s3(bucket):
-  s3 = boto3.resource('s3')
-
-  target_bucket = s3.Bucket(name=bucket)
-
-  las_data_pattern = re.compile('\d+\.las')
-  las_data_files = []
-
-  print('\nTraversing S3 bucket', str(target_bucket.name), 'for LAS data files, please wait')
-
-  for s3_object in target_bucket.objects.all():
-      if re.search(las_data_pattern, str(s3_object)):
-          las_data_files.append(s3_object.key)
-
-  print('\nFound ' + str(len(las_data_files)) + ' LAS data files in S3 bucket ' + str(target_bucket.name), '\n')
-  
-  return las_data_files
-
 def parse_las_data(las_data_doc, index_name, es):
     c = Converter()
-    # Download the LAS file from S3
-    #s3.Object(target_bucket.name, las_data_doc).download_file(f'/tmp/las_processing.las')
 
     # Read it. If something goes wrong, skip the file
     log = None
     try:
-      #log = c.set_file('/tmp/las_processing.las')
       log = c.set_file(las_data_doc)
     except Exception as ex:
       logging.warn(ex)
@@ -146,8 +124,8 @@ if __name__ == "__main__":
                      help='not needed if connecting to  an unsecured cluster',)
   parser.add_argument('--ca-cert', metavar='/path/to/ca/ca.crt', type=str,
                      help='not needed if connecting to a cluster not secured with SSL/TLS')
-  parser.add_argument('--bucket', metavar='my-bucket', type=str,
-                     help='name of the S3 bucket to retrieve files from', required=True)
+  parser.add_argument('--directory', metavar='directory', type=str,
+                   help='The file system directory to find all tops files', required=True)
 
 
   args = parser.parse_args()
@@ -165,23 +143,24 @@ if __name__ == "__main__":
   }
 
   if args.insecure:
-      full_es_url = 'http://' + args.es_url + ':' + str(args.es_port)
-      es = Elasticsearch(full_es_url)
-
+    full_es_url = 'http://' + args.es_url + ':' + str(args.es_port)
+    es = Elasticsearch(full_es_url)
   else:
-      #context = create_default_context(cafile=args.ca_cert)
-      full_es_url = 'https://' + args.es_url + ':' + str(args.es_port)
-      #es = Elasticsearch(full_es_url, ssl_context=context, http_auth=(args.user, args.password))
-      es = Elasticsearch(full_es_url, http_auth=(args.user, args.password))
+    full_es_url = 'https://' + args.es_url + ':' + str(args.es_port)
+
+    if args.ca_cert is None:
+        es = Elasticsearch(full_es_url, http_auth=(args.user, args.password))
+    else:
+        context = create_default_context(cafile=args.ca_cert)
+        es = Elasticsearch(full_es_url, ssl_context=context, http_auth=(args.user, args.password))
 
 
   if es.indices.exists(index=args.index) is False:
     es.indices.create(index=args.index, body=index_mapping)
 
-  #las_data_files = get_las_from_s3(args.bucket)
-  las_data_files = list(glob.iglob("/Users/alexclose/Documents/Data/lasData/LAS_SHELL/*.las", recursive=True))
+  las_data_files = list(glob.iglob(f"{args.directory}/*.las", recursive=True))
   logging.info(f"Found {len(las_data_files)} las data files")
-
+ 
   las_data_files = las_data_files
 
   total_docs = 0
