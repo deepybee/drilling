@@ -5,9 +5,7 @@ from LAS import Converter
 from elasticsearch import Elasticsearch
 from elasticsearch import helpers
 from ssl import create_default_context
-import re
 import argparse
-import boto3
 import glob
 import logging
 

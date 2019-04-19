@@ -4,10 +4,8 @@ from elasticsearch import Elasticsearch
 from elasticsearch import helpers
 from ssl import create_default_context
 import re
-import json
 import boto3
 import argparse
-import glob
 import logging
 
 def _try_to_float(v):
