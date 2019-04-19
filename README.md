@@ -4,7 +4,7 @@ Ingest parsers for Elasticsearch which cater for esoteric log formats in the dri
 `eLAStify_s3.py` scrapes an S3 bucket for LAS files then downloads and parses them before indexing them into Elasticsearch.
 
 ```bash
-./eLAStify.py --help
+./eLAStify_s3.py --help
 usage: eLAStify.py [-h] --es-url elasticsearch.mydomain.com [--es-port 9200]
                    [--index las_data] [--insecure False] [--user elastic]
                    [--password Pa55w0rd] [--ca-cert /path/to/ca/ca.crt]
@@ -28,7 +28,7 @@ optional arguments:
   --bucket my-bucket    name of the S3 bucket to retrieve files from
 ```
 
-`top2es.py` performs the same function but on Wellbore / TOPS data format files.
+`top2es_s3.py` performs the same function but on Wellbore / TOPS data format files.
 
 ```bash
 ./top2es_s3.py --help  
