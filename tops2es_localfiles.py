@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 
 from elasticsearch import Elasticsearch
+from elasticsearch import helpers
 from ssl import create_default_context
 import re
 import json
 import boto3
 import argparse
+import glob
+import logging
+
+def _try_to_float(v):
+    try:
+        return float(v)
+    except Exception as e:
+        return v    
 
 parser = argparse.ArgumentParser(description='Processes Wellbore / TOPS data files and indexes them into an Elasticsearch cluster.')
 
@@ -23,8 +32,8 @@ parser.add_argument('--password', metavar='Pa55w0rd', type=str,
                    help='not needed if connecting to  an unsecured cluster',)
 parser.add_argument('--ca-cert', metavar='/path/to/ca/ca.crt', type=str,
                    help='not needed if connecting to a cluster not secured with SSL/TLS')
-parser.add_argument('--bucket', metavar='my-bucket', type=str,
-                   help='name of the S3 bucket to retrieve files from', required=True)
+parser.add_argument('--directory', metavar='directory', type=str,
+                   help='The file system directory to find all tops files', required=True)
 
 
 args = parser.parse_args()
@@ -35,25 +44,42 @@ if args.insecure:
 
 else:
     full_es_url = 'https://' + args.es_url + ':' + str(args.es_port)
-    context = create_default_context(cafile=args.ca_cert)
-    es = Elasticsearch(full_es_url, ssl_context=context, http_auth=(args.user, args.password))
+    if args.ca_cert is None:
+        es = Elasticsearch(full_es_url, http_auth=(args.user, args.password))
+    else:
+        context = create_default_context(cafile=args.ca_cert)
+        es = Elasticsearch(full_es_url, ssl_context=context, http_auth=(args.user, args.password))
 
 
-s3 = boto3.resource('s3')
+index_mapping = {
+    "mappings" : {
+      "_doc": {
+        "properties" : {
+          "geo_point" : {
+            "type": "geo_point"
+          }
+        }
+      }
+    }
+  }
 
-target_bucket = s3.Bucket(name=args.bucket)
+if es.indices.exists(index=args.index) is False:
+    es.indices.create(index=args.index, body=index_mapping)
 
-tops_data_pattern = re.compile('tops\.\d_\w{1,}_\d{3}(|\w+)_\w{3}_\d+')
-tops_data_files = []
+for _ in ("boto", "elasticsearch", "urllib3"):
+    logging.getLogger(_).setLevel(logging.CRITICAL)
 
-print('\nTraversing S3 bucket', str(target_bucket.name), 'for TOPS data files, please wait')
+logging.basicConfig(
+level=logging.INFO,
+format="%(asctime)s [%(levelname)-5.5s]  %(message)s",
+handlers=[
+    logging.FileHandler("tops.log"),
+    logging.StreamHandler()
+])
 
-for s3_object in target_bucket.objects.all():
-    if re.search(tops_data_pattern, str(s3_object)):
-        tops_data_files.append(s3_object.key)
+tops_data_files = list(glob.iglob(f"{args.directory}/tops.*", recursive = True))
 
-
-print('\nFound ' + str(len(tops_data_files)) + ' Wellbore data files in S3 bucket ' + str(target_bucket.name), '\n')
+print('\nFound ' + str(len(tops_data_files)) + ' Wellbore data files')
 
 total_docs = 0
 total_files = 0
@@ -65,14 +91,9 @@ def create_dict(key_list, value_list):
 
 
 def parse_tops_data(top_data_doc):
-
-    s3.Object(target_bucket.name, top_data_doc).download_file(f'/tmp/tops_processing')
-
-    log = open('/tmp/tops_processing', 'r')
+    log = open(top_data_doc, 'r')
 
     source_input = log.read().replace('C-', '')
-
-    log.close()
 
     source_input = source_input.replace('\n', '')
     source_input = source_input.replace('TVD', '|tvd', 1)
@@ -176,36 +197,47 @@ def parse_tops_data(top_data_doc):
     for split in lower_values:
         lower_dictionary = {}
         lower_dictionary = create_dict(lower_headers, split)
-        dict_for_frame = {**upper_dictionary, **lower_dictionary}
+        dict_for_frame = {
+            "meta": {k: _try_to_float(v) for k,v in upper_dictionary.items() if v is not ""},
+            "data": {k: _try_to_float(v) for k,v in lower_dictionary.items() if v is not ""},
+            "geo_point": {
+                "lat": float(upper_dictionary['bhl_lat']),
+                "lon": float(upper_dictionary['bhl_lon'])
+            }
+        }
         docs_list.append(dict_for_frame)
 
     index = 0
+    json_docs = []
 
-    for _ in docs_list:
-        docs_list[index] = json.dumps(docs_list[index])
-
+    for doc in docs_list:
+        json_docs.append(
+            {
+              "_index": args.index,
+              "_type": "_doc",
+              "_source": doc
+            }
+        )
+            
     # Remove errant first index which contained garbage escaped data
-    docs_list.pop(0)
+    json_docs.pop(0)
 
-    def dict2doc(current_dict):
-        body = list()
-        body.append({'index': {'_index': args.index, '_type': '_doc'}})
-        body.append(current_dict)
+    body = [
+        {'index': {'_index': args.index, '_type': '_doc'}}
+    ]
 
-        response = es.bulk(body=body)
+    body.extend(json_docs)
 
-    print('Indexed', str(len(docs_list)), 'documents from TOPS data file', str(top_data_doc))
-
-    for document in docs_list:
-        dict2doc(document)
-        global total_docs
-        total_docs += 1
-
-    global total_files
-    total_files += 1
-
+    return json_docs
 
 if __name__ == "__main__":
-    for doc in tops_data_files:
-        parse_tops_data(doc)
-    print('\nTotal', str(total_docs), 'documents processed and indexed into Elasticsearch from', str(total_files), 'source files.')
+    all_data = []
+    for i, doc in enumerate(tops_data_files):
+        logging.info(f"{i}/{len(tops_data_files)} {doc}")
+        all_data.extend(parse_tops_data(doc))
+    logging.info(f"Uploading {len(all_data)} documents to ES")
+
+    helpers.bulk(es, all_data, raise_on_exception=False, raise_on_error=False)
+
+
+
