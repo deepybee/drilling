@@ -1,7 +1,7 @@
 # drilling
 Ingest parsers for Elasticsearch which cater for esoteric log formats in the drilling industry
 
-`eLAStify.py` scrapes an S3 bucket for LAS files then downloads and parses them before indexing them into Elasticsearch.
+`eLAStify_s3.py` scrapes an S3 bucket for LAS files then downloads and parses them before indexing them into Elasticsearch.
 
 ```bash
 ./eLAStify.py --help
@@ -31,7 +31,7 @@ optional arguments:
 `top2es.py` performs the same function but on Wellbore / TOPS data format files.
 
 ```bash
-./top2es.py --help  
+./top2es_s3.py --help  
 usage: top2es.py [-h] --es-url elasticsearch.mydomain.com [--es-port 9200]
                  [--index tops_data] [--insecure False] [--user elastic]
                  [--password Pa55w0rd] [--ca-cert /path/to/ca/ca.crt] --bucket
@@ -56,3 +56,5 @@ optional arguments:
   --bucket my-bucket    name of the S3 bucket to retrieve files from
 
 ```
+
+the `_localfile` variants perform the same functions on a local directory; for these replace the `--bucket` flag with `--directory` and pass the desired location to search (NB: search is recursive so subfolders will also be checked for matching files).
